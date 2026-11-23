@@ -2,21 +2,66 @@ package bank
 
 import bank.exceptions.*
 import bank.model.*
+import bank.server.BankWebServer
 
-/** Demo entry point showcasing all features of the Bank Account System. */
-@main def run(): Unit =
+/** Demo and local server entry point.
+  *
+  * - 'sbt run' starts the localhost HTTP server on http://localhost:8080 and displays the demo
+  * - 'sbt "run demo"' runs just the console demo
+  * - 'sbt "run server"' starts just the HTTP server
+  */
+@main def run(args: String*): Unit =
+  val mode = args.headOption.getOrElse("both")
+
+  if mode == "demo" then
+    runConsoleDemo()
+  else
+    val port = 8080
+    // Seed initial accounts
+    BankWebServer.seedDemoData()
+
+    val server = new BankWebServer(port)
+    server.start()
+
+    println(
+      s"""================================================================================
+         |              BANK ACCOUNT SYSTEM - LOCALHOST SERVER ACTIVE
+         |================================================================================
+         |  HTTP Server running at : http://localhost:$port
+         |  Interactive Web UI     : http://localhost:$port/
+         |  REST API               : http://localhost:$port/api/accounts
+         |  Health Check           : http://localhost:$port/api/health
+         |
+         |  Sample accounts for Alice Smith (Savings), Bob Jones (Checking), and
+         |  Charlie Brown (Checking) are pre-loaded.
+         |================================================================================""".stripMargin
+    )
+
+    if mode != "server" then
+      runConsoleDemo()
+      println(
+        s"""--------------------------------------------------------------------------------
+           | Localhost server is active at http://localhost:$port
+           | Open http://localhost:$port in your browser to manage accounts and transactions.
+           | Press Ctrl+C in your terminal to shut down the server.
+           |--------------------------------------------------------------------------------""".stripMargin
+      )
+
+    // Keep server process running
+    Thread.currentThread().join()
+
+/** Executes the full console demo. */
+def runConsoleDemo(): Unit =
   println(
     """================================================================================
       |                   BANK ACCOUNT SYSTEM DEMONSTRATION
       |================================================================================""".stripMargin
   )
 
-  // Ensure clean state
+  // Ensure clean state for demo
   Bank.reset()
 
-  // ----------------------------------------------------------------------------
   // 1. Opening Accounts
-  // ----------------------------------------------------------------------------
   printSectionHeader("1. Opening Accounts")
 
   val aliceSavings = Bank.openSavingsAccount(
@@ -39,9 +84,7 @@ import bank.model.*
   )
   println(s"Opened Checking Account : ID=${charlieChecking.id}, Owner='${charlieChecking.ownerName}', Balance=${BankException.formatCurrency(charlieChecking.balance)}, OverdraftLimit=${BankException.formatCurrency(charlieChecking.overdraftLimit)}")
 
-  // ----------------------------------------------------------------------------
   // 2. Deposits & Withdrawals
-  // ----------------------------------------------------------------------------
   printSectionHeader("2. Deposits & Withdrawals")
 
   val dep1 = Bank.deposit(aliceSavings.id, BigDecimal("250.00"))
@@ -56,9 +99,7 @@ import bank.model.*
   println(s"Executed: ${dep2.description}")
   println(s"Bob's updated balance: ${BankException.formatCurrency(Bank.getAccount(bobChecking.id).balance)}")
 
-  // ----------------------------------------------------------------------------
   // 3. Atomic Funds Transfer
-  // ----------------------------------------------------------------------------
   printSectionHeader("3. Atomic Funds Transfer")
 
   val transferAmount = BigDecimal("200.00")
@@ -68,9 +109,7 @@ import bank.model.*
   println(s"Alice's balance after transfer: ${BankException.formatCurrency(Bank.getAccount(aliceSavings.id).balance)}")
   println(s"Bob's balance after transfer  : ${BankException.formatCurrency(Bank.getAccount(bobChecking.id).balance)}")
 
-  // ----------------------------------------------------------------------------
-  // 4. Checking Account Overdraft In Action
-  // ----------------------------------------------------------------------------
+  // 4. Checking Account Overdraft Feature
   printSectionHeader("4. Checking Account Overdraft Feature")
 
   val currentBob = Bank.getAccount(bobChecking.id).asInstanceOf[CheckingAccount]
@@ -85,26 +124,21 @@ import bank.model.*
   println(s"Bob's balance is now NEGATIVE: ${BankException.formatCurrency(bobAfterOverdraft.balance)}")
   println(s"Remaining overdraft allowance: ${BankException.formatCurrency(bobAfterOverdraft.balance + bobAfterOverdraft.overdraftLimit)}")
 
-  // ----------------------------------------------------------------------------
-  // 5. Triggering & Handling Every Custom Exception
-  // ----------------------------------------------------------------------------
+  // 5. Custom Exceptions Demonstration
   printSectionHeader("5. Custom Exceptions Demonstration")
 
-  // Exception 1: InsufficientFundsException (Savings account cannot go below 0)
   testScenario("5.1 InsufficientFundsException (Savings Account)") {
     val aliceBal = Bank.getAccount(aliceSavings.id).balance
     println(s"Alice's balance is ${BankException.formatCurrency(aliceBal)}. Attempting withdrawal of $$1,000.00...")
     Bank.withdraw(aliceSavings.id, BigDecimal("1000.00"))
   }
 
-  // Exception 2: OverdraftLimitExceededException (Checking account exceeds limit)
   testScenario("5.2 OverdraftLimitExceededException (Checking Account)") {
     val bobBal = Bank.getAccount(bobChecking.id).balance
     println(s"Bob's balance is ${BankException.formatCurrency(bobBal)} with overdraft limit $$300.00 ($$150.00 available). Attempting withdrawal of $$200.00...")
     Bank.withdraw(bobChecking.id, BigDecimal("200.00"))
   }
 
-  // Exception 3: InvalidAmountException (Negative, Zero, or Bad Precision)
   testScenario("5.3a InvalidAmountException (Negative Amount)") {
     println("Attempting deposit of -$50.00...")
     Bank.deposit(aliceSavings.id, BigDecimal("-50.00"))
@@ -120,19 +154,16 @@ import bank.model.*
     Bank.deposit(aliceSavings.id, BigDecimal("10.555"))
   }
 
-  // Exception 4: AccountNotFoundException
   testScenario("5.4 AccountNotFoundException (Non-existent ID)") {
     println("Attempting lookup of account 'ACC-9999'...")
     Bank.getAccount("ACC-9999")
   }
 
-  // Exception 5: DuplicateAccountException
   testScenario("5.5 DuplicateAccountException (Duplicate Account Registration)") {
     println(s"Attempting to register account with already taken ID '${aliceSavings.id}'...")
     Bank.openSavingsAccountWithId(aliceSavings.id, "Imposter Alice")
   }
 
-  // Exception 6: InvalidOperationException
   testScenario("5.6a InvalidOperationException (Self-Transfer)") {
     println(s"Attempting transfer from Alice (${aliceSavings.id}) to Alice (${aliceSavings.id})...")
     Bank.transfer(aliceSavings.id, aliceSavings.id, BigDecimal("50.00"))
@@ -151,22 +182,16 @@ import bank.model.*
     Bank.deposit(charlieChecking.id, BigDecimal("50.00"))
   }
 
-  // ----------------------------------------------------------------------------
-  // 6. Account Statement Generation
-  // ----------------------------------------------------------------------------
+  // 6. Statement Generation
   printSectionHeader("6. Formatted Statements & Audit Log")
 
   println(Bank.getStatement(aliceSavings.id).formatted)
   println()
   println(Bank.getStatement(bobChecking.id).formatted)
 
-  println(
-    """================================================================================
-      |                   DEMONSTRATION COMPLETED SUCCESSFULLY
-      |================================================================================""".stripMargin
-  )
+  // Seed demo data again so localhost web UI has initial accounts ready
+  BankWebServer.seedDemoData()
 
-/** Helper to run an operation and cleanly display caught BankException. */
 private def testScenario(title: String)(block: => Any): Unit =
   println(s"--> Scenario: $title")
   try

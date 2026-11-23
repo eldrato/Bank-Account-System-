@@ -6,6 +6,7 @@ lazy val root = project
     name := "bank-account-system",
     version := "1.0.0",
     scalaVersion := scala3Version,
+    Compile / run / mainClass := Some("bank.run"),
     scalacOptions ++= Seq(
       "-deprecation",
       "-feature",
