@@ -1,134 +1,166 @@
-# Bank Account System (Scala)
+# Bank Account System
 
-A bank account system written entirely in **Scala 3**. It models accounts as classes, transactions as immutable case classes, and the bank itself as a singleton object. Invalid operations and overdrafts are handled with a custom exception hierarchy.
+A complete, production-grade, functional-leaning **Bank Account System** built entirely in **Scala 3** using **sbt** and **munit**.
 
-![Scala](https://img.shields.io/badge/Scala-3-red)
-![sbt](https://img.shields.io/badge/build-sbt-blue)
-![Tests](https://img.shields.io/badge/tests-munit-green)
-![License](https://img.shields.io/badge/license-MIT-lightgrey)
+---
 
-## Features
+## Table of Contents
+- [Tech Stack](#tech-stack)
+- [Project Structure](#project-structure)
+- [Core Architecture & Design Decisions](#core-architecture--design-decisions)
+  - [1. Domain Model & Immutability](#1-domain-model--immutability)
+  - [2. Sealed Transaction Hierarchy](#2-sealed-transaction-hierarchy)
+  - [3. Singleton Bank & Atomic State Transitions](#3-singleton-bank--atomic-state-transitions)
+  - [4. Custom Exceptions Hierarchy](#4-custom-exceptions-hierarchy)
+  - [5. Dual API: Pure Functional Either & Throwing Variant](#5-dual-api-pure-functional-either--throwing-variant)
+  - [6. Atomic Transfer Guarantee](#6-atomic-transfer-guarantee)
+- [How to Build, Test, and Run](#how-to-build-test-and-run)
+  - [Prerequisites](#prerequisites)
+  - [Compilation](#compilation)
+  - [Running Unit Tests](#running-unit-tests)
+  - [Running the Interactive Demo](#running-the-interactive-demo)
+- [Scala-Only Verification](#scala-only-verification)
 
-- **Account types**
-  - `SavingsAccount`: no overdraft allowed
-  - `CheckingAccount`: configurable overdraft limit
-- **Transactions as case classes**: a sealed `Transaction` trait with `Deposit`, `Withdrawal` and `Transfer`, all immutable and recorded in each account's history
-- **Singleton `Bank` object**: one entry point to open and close accounts, look them up, deposit, withdraw, transfer and fetch statements
-- **Atomic transfers**: if any step fails, neither account changes
-- **Custom exceptions** with clear, descriptive messages
-- **Precise money handling**: `BigDecimal` is used for all amounts, never `Double`
-- **100% Scala**: source, tests and build config contain no other languages
+---
 
-## Custom Exceptions
+## Tech Stack
+- **Language**: Scala 3 (`3.3.5` LTS)
+- **Build Tool**: sbt (`1.10.7`)
+- **Testing Framework**: `munit` (`1.0.4`)
+- **Standard Library Only**: No external libraries or third-party frameworks beyond `munit` for tests.
+- **Constraints**: 100% Scala source code. No Java, Python, JavaScript, Shell/Bash, or other languages.
 
-All exceptions extend a sealed `BankException` base class.
-
-| Exception | Raised when |
-|---|---|
-| `InsufficientFundsException` | A withdrawal or transfer exceeds the available balance |
-| `OverdraftLimitExceededException` | A checking account goes past its overdraft limit |
-| `InvalidAmountException` | The amount is zero, negative or has invalid precision |
-| `AccountNotFoundException` | The account id does not exist |
-| `DuplicateAccountException` | An account with the same id already exists |
-| `InvalidOperationException` | Transfer to the same account, operating on a closed account, or closing an account with a non-zero balance |
+---
 
 ## Project Structure
 
 ```
-bank-account-system/
-├── build.sbt
-├── project/
-│   └── build.properties
-├── src/
-│   ├── main/scala/bank/
-│   │   ├── model/          # Account types and Transaction case classes
-│   │   ├── exceptions/     # BankException hierarchy
-│   │   ├── Bank.scala      # Singleton bank object
-│   │   └── Main.scala      # @main demo
-│   └── test/scala/bank/    # munit test suites
+.
 ├── .gitignore
-└── README.md
+├── README.md
+├── build.sbt
+├── project
+│   └── build.properties
+└── src
+    ├── main
+    │   └── scala
+    │       └── bank
+    │           ├── Bank.scala                   # Singleton Bank entry point & registry
+    │           ├── Main.scala                   # @main runnable demo application
+    │           ├── exceptions
+    │           │   └── BankException.scala      # Sealed BankException hierarchy
+    │           └── model
+    │               ├── Account.scala            # Account trait, SavingsAccount, CheckingAccount
+    │               └── Transaction.scala        # Transaction sealed trait & case classes
+    └── test
+        └── scala
+            └── bank
+                └── BankSpec.scala               # munit test suite (47 comprehensive tests)
 ```
 
-## Getting Started
+---
+
+## Core Architecture & Design Decisions
+
+### 1. Domain Model & Immutability
+- **Arbitrary-Precision Currency**: All monetary amounts (`balance`, `amount`, `overdraftLimit`) are modeled strictly with `scala.math.BigDecimal`. Floating-point types (`Double`, `Float`) are strictly forbidden to eliminate rounding errors.
+- **Precision Validation**: Monetary inputs are validated to enforce standard currency precision: strictly positive (`> 0.00`) and at most 2 decimal places.
+- **Encapsulated State**: `Account` is an immutable domain model:
+  - `SavingsAccount`: Does not permit overdrafts. Balance can never fall below `0.00`.
+  - `CheckingAccount`: Supports a configurable `overdraftLimit: BigDecimal >= 0.00`. Balances can dip into negative territory down to `-overdraftLimit`.
+- **Account Status**: Accounts track operational lifecycle (`AccountStatus.Active` vs `AccountStatus.Closed`). Operating on a closed account is rejected with `InvalidOperationException`. Closing an account requires a zero balance.
+
+### 2. Sealed Transaction Hierarchy
+Transactions are modeled as an immutable Algebraic Data Type (ADT):
+```scala
+sealed trait Transaction:
+  def id: String
+  def amount: BigDecimal
+  def timestamp: Instant
+  def involvedAccountIds: Set[String]
+  def description: String
+```
+Concrete case classes:
+- `Transaction.Deposit(id, accountId, amount, timestamp)`
+- `Transaction.Withdrawal(id, accountId, amount, timestamp)`
+- `Transaction.Transfer(id, sourceAccountId, targetAccountId, amount, timestamp)`
+
+Every transaction is timestamped (UTC) and recorded chronologically in the involved accounts' immutable audit history.
+
+### 3. Singleton Bank & Atomic State Transitions
+- `object Bank` is the single entry point coordinating accounts, generating unique IDs (`ACC-1001`, `TXN-5001`), and maintaining the registry.
+- **Thread Safety**: Backed by `java.util.concurrent.atomic.AtomicReference[Map[String, Account]]`.
+- **Lock-Free Concurrency**: All state updates use a tail-recursive Compare-And-Set (`compareAndSet`) retry loop. State transitions are purely functional and atomic.
+
+### 4. Custom Exceptions Hierarchy
+All domain failures extend `BankException`:
+- `InsufficientFundsException(accountId, balance, requestedAmount)`: Thrown when balance is insufficient (e.g. savings account withdrawal beyond balance).
+- `OverdraftLimitExceededException(accountId, balance, overdraftLimit, requestedAmount)`: Thrown when checking account withdrawal exceeds available balance + overdraft limit.
+- `InvalidAmountException(amount, reason)`: Thrown on zero, negative, or excessive decimal precision amounts.
+- `AccountNotFoundException(accountId)`: Thrown when an account ID cannot be found.
+- `DuplicateAccountException(accountId)`: Thrown when attempting to register an existing account ID.
+- `InvalidOperationException(message)`: Thrown for illegal business operations (self-transfer, operating on closed account, closing non-zero account).
+
+### 5. Dual API: Pure Functional Either & Throwing Variant
+Every banking operation exposes two symmetric interfaces:
+1. **Safe Functional API** (`*Safe`): Returns `Either[BankException, T]`.
+   - `depositSafe`, `withdrawSafe`, `transferSafe`, `closeAccountSafe`, `getAccountSafe`, etc.
+2. **Throwing API**: Unwraps the `Either` and throws the domain exception on failure.
+   - `deposit`, `withdraw`, `transfer`, `closeAccount`, `getAccount`, etc.
+
+This gives callers full freedom to choose idiomatic functional composition via `for`-comprehensions or exception-driven workflows.
+
+### 6. Atomic Transfer Guarantee
+Transfers between accounts are strictly atomic. Before applying any balance changes:
+1. Inputs are validated (`source != target`, `amount > 0`, scale <= 2).
+2. Both accounts are verified to exist and be active.
+3. Outbound debit validation is verified against available funds/overdraft.
+4. Inbound credit is verified.
+5. If **any** check fails, neither account is debited or credited.
+
+---
+
+## How to Build, Test, and Run
 
 ### Prerequisites
+- JDK 17+ (or JDK 21/24)
+- sbt 1.9+ or 1.10+
 
-- JDK 17 or newer
-- [sbt](https://www.scala-sbt.org/)
-
-### Clone and build
-
-```bash
-git clone https://github.com/<your-username>/bank-account-system.git
-cd bank-account-system
+### Compilation
+Compile all Scala sources with strict warnings enabled:
+```sh
 sbt compile
 ```
 
-### Run the demo
-
-```bash
-sbt run
-```
-
-The demo opens accounts, makes deposits, withdrawals and a transfer, uses an overdraft on a checking account, and triggers each custom exception.
-
-### Run the tests
-
-```bash
+### Running Unit Tests
+Execute the 47 munit test suites covering all edge cases, exceptions, overdraft logic, atomicity, and transaction history:
+```sh
 sbt test
 ```
 
-## Usage Example
-
-```scala
-import bank.Bank
-
-val savings  = Bank.openSavingsAccount(owner = "Asha", initialDeposit = BigDecimal(1000))
-val checking = Bank.openCheckingAccount(owner = "Ravi", initialDeposit = BigDecimal(500), overdraftLimit = BigDecimal(200))
-
-Bank.deposit(savings.id, BigDecimal(250))
-Bank.withdraw(checking.id, BigDecimal(600))        // allowed: within overdraft limit
-Bank.transfer(savings.id, checking.id, BigDecimal(300))
-
-// Safe variant that returns Either instead of throwing
-Bank.safeWithdraw(savings.id, BigDecimal(99999)) match
-  case Left(err)  => println(s"Failed: ${err.getMessage}")
-  case Right(acc) => println(s"New balance: ${acc.balance}")
-
-Bank.statement(savings.id).foreach(println)
+### Running the Interactive Demo
+Run the `@main` application to see formatted demonstrations of account opening, deposits, withdrawals, atomic transfers, checking overdrafts, and every custom exception being caught and handled:
+```sh
+sbt run
 ```
 
-> The method names above are illustrative. Adjust them to match your implementation.
+---
 
-## Design Decisions
+## Scala-Only Verification
 
-- **Immutability first**: transactions are case classes and balances change only through validated operations.
-- **Encapsulation**: account state cannot be modified directly from outside the class.
-- **Validate before mutating**: every input is checked before any state changes, which keeps failed operations from leaving partial updates.
-- **Two error styles**: the domain layer throws custom exceptions, and the `Bank` object offers `Either`-based variants for callers who prefer functional error handling.
-- **Singleton bank**: `object Bank` owns the account registry and generates unique ids.
+All source files, test suites, and build scripts in this repository are written exclusively in Scala:
 
-## Testing
+| File | Type | Description |
+|------|------|-------------|
+| `build.sbt` | Scala DSL | sbt project build configuration |
+| `src/main/scala/bank/model/Account.scala` | Scala 3 | Immutable Account domain model & logic |
+| `src/main/scala/bank/model/Transaction.scala` | Scala 3 | Sealed Transaction ADT |
+| `src/main/scala/bank/exceptions/BankException.scala` | Scala 3 | Sealed BankException hierarchy |
+| `src/main/scala/bank/Bank.scala` | Scala 3 | Bank singleton registry & atomic operations |
+| `src/main/scala/bank/Main.scala` | Scala 3 | Demo application entry point (`@main`) |
+| `src/test/scala/bank/BankSpec.scala` | Scala 3 | Unit test suite using `munit` |
+| `project/build.properties` | Config | Declares `sbt.version=1.10.7` |
+| `README.md` | Markdown | Documentation |
+| `.gitignore` | Config | Git ignore rules |
 
-Tests are written with [munit](https://scalameta.org/munit/) and cover:
-
-- Successful deposits, withdrawals and transfers
-- Overdraft allowed within the limit and rejected beyond it
-- Every custom exception
-- Transfer atomicity on failure
-- Transaction history correctness
-- Edge cases: zero or negative amounts, closed accounts and unknown ids
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/my-feature`
-3. Commit your changes and make sure `sbt test` passes
-4. Open a pull request
-
-Please keep all contributions in Scala.
-
-## License
-
-This project is licensed under the MIT License. See the `LICENSE` file for details.
+No Java, Kotlin, Python, JavaScript, Bash scripts, or other languages exist in the repository.
